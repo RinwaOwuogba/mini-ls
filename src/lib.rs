@@ -1,36 +1,28 @@
-use std::{path::{Path, PathBuf}, error::Error, env::{self, Args}, io, fs};
+use std::{path::{Path}, error::Error, env, fs, str::FromStr};
 
-pub fn run() {
-  let path = get_config(&mut env::args());
-  
-  println!("Showing files in '{path}':");
+pub fn run(args: &Vec<String>) -> (String, Vec<String>) {
+  let path = get_config(args);
 
-  let path_reader = Box::new(FsPathReader::new(path));
-  match get_files(path_reader) {
-    Ok(files) => {
-        for file_name in files {
-            println!("- {file_name}")
-        }
-    },
-    Err(e) => print!("Error getting files {}", e),
-  };
+  let mut path_iter = ReadFsDir::new(&path);
+  (path, get_files(&mut path_iter))
 }
 
-fn get_files(path_reader: Box<dyn PathReader>) -> Result<Vec<String>, Box<dyn Error>> {
-  let mut files = Vec::new();
+fn get_files<'a,>(path_reader: &'a mut dyn Iterator<Item = FsIterItem>) -> Vec<String> {
+    let mut files = Vec::new();
 
-  for entry in path_reader.read_dir()? {
-    if let Ok(entry) = entry {
-      files.push(entry);
+    for entry in path_reader {
+      if let Ok(entry) = entry {
+        files.push(entry);
+      }
     }
-  }
-
-  Ok(files)
+    
+    files
 } 
 
-fn get_config(args: &mut Args) -> String {
-  let _file_name = args.next();
-  args.next().unwrap_or(get_current_dir())
+fn get_config(args: &Vec<String>) -> String {
+  if args.len() < 2 { return get_current_dir().to_string() }
+
+  String::from(&args[1])
 }
 
 fn get_current_dir() -> String {
@@ -44,63 +36,52 @@ mod tests {
   #[test]
   fn test_get_files() {
     let expected = vec!["Cargo.toml", "src", ".git", "target", "Cargo.lock", ".gitignore"];
-    // let dummy_file_names = expected.iter().map(|f| String::from(*f)).collect();
-    // let dummy_file_names: Vec<String> = expected.iter().map(|f| String::from(*f)).collect();
 
-    let current_path_reader = Box::new(DummyPathReader::new(&expected));
-    // let current_path_reader = Box::new(DummyPathReader::new(dummy_file_names));
-
-    let got = match get_files(current_path_reader) {
-        Ok(d) => d,
-        Err(e) => panic!("Error while getting files {e}")
-    };
+    let mut path_iter = ReadDummyFs::new(&expected);
+    let got = get_files(&mut path_iter);
 
     assert_array_equals(&expected, &got);
   }
 
-  fn assert_array_equals(a: &Vec<&str>, b: &Vec<String>) {
-      let b: Vec<&str> = b.into_iter().map(|f| f.as_str()).collect();
-
-      assert_eq!(a.len(), b.len());
-
-      for x in b.into_iter() {
-          assert!(a.contains(&x), "\n{:?} does not contain '{}'\n", a, x);
+  struct ReadDummyFs<'a> {
+    read_dir: Box<dyn Iterator<Item = &'a &'a str> + 'a>
+  }
+  
+  impl<'a> ReadDummyFs<'a> {
+    fn new(file_names: &'a Vec<&'a str>) -> Self {
+      Self { read_dir: Box::new(file_names.iter())}
+    }
+  }
+  
+  impl<'a> Iterator for ReadDummyFs<'a> {
+    type Item = FsIterItem;
+  
+    fn next(&mut self) -> Option<Self::Item> {
+      let option =  self.read_dir.next();
+      if option.is_none() {
+        return Option::None;
       }
-  }
-}
-
-type CustomReadDir = io::Result<Box<dyn Iterator<Item = Result<String, Box<dyn Error>>>>>;
-trait PathReader {
-  fn read_dir(&self) -> CustomReadDir;
-}
-
-struct FsPathReader {
-  path: Box<PathBuf>
-}
-
-impl FsPathReader {
-  fn new(path: String) -> Self {
-    Self { path: Box::new(Path::new(&path).to_owned()) }
-  }
-}
-
-impl PathReader for FsPathReader {
-  fn read_dir(&self) -> CustomReadDir {
-    match self.path.read_dir() {
-      Ok(rd) => Ok(Box::new(ReadFsDir {
-        read_dir: rd
-      })),
-      Err(e) => Err(e),
+  
+      let entry = *option.unwrap();
+      Option::Some(Ok(String::from_str(entry).unwrap()))
     }
   }
 }
+
+type FsIterItem = Result<String, Box<dyn Error>>;
 
 struct ReadFsDir {
   read_dir: fs::ReadDir
 }
 
+impl ReadFsDir {
+  fn new(path: &str) -> Self {
+    Self{ read_dir: Path::new(path).read_dir().unwrap(), }
+  }
+}
+
 impl Iterator for ReadFsDir {
-  type Item = Result<String, Box<dyn Error>>;
+  type Item = FsIterItem;
 
   fn next(&mut self) -> Option<Self::Item> {
       let option = self.read_dir.next();
@@ -110,47 +91,18 @@ impl Iterator for ReadFsDir {
 
       let entry = option.unwrap();
       match entry {
-        Ok(entry) => Option::Some(Ok(String::from(entry.path().file_name().unwrap().to_str().unwrap()))),
+        Ok(entry) => Option::Some(Ok(String::from_str(entry.path().file_name().unwrap().to_str().unwrap()).unwrap())),
         Err(e) => Option::Some(Err(Box::new(e)))
       }
     }
 }
 
-struct DummyPathReader {
-  files: Vec<String>
-}
+pub fn assert_array_equals(a: &Vec<&str>, b: &Vec<String>) {
+  let b: Vec<&str> = b.into_iter().map(|f| f.as_str()).collect();
 
-impl DummyPathReader {
-  fn new(file_names: &Vec<&str>) -> Self {
-    // fn new(file_names: Vec<String>) -> Self {
-    Self { files: file_names. }
-  }
-}
+  assert_eq!(a.len(), b.len());
 
-impl PathReader for DummyPathReader {
-  fn read_dir(&self) -> CustomReadDir {
-    Ok(
-      Box::new(ReadDummyFs {
-        read_dir: Box::new(self.files.clone().to_owned().into_iter())
-      })
-    )
-  }
-}
-
-struct ReadDummyFs {
-  read_dir: Box<dyn Iterator<Item = String>>
-}
-
-impl Iterator for ReadDummyFs {
-  type Item = Result<String, Box<dyn Error>>;
-
-  fn next(&mut self) -> Option<Self::Item> {
-    let option =  self.read_dir.next();
-    if option.is_none() {
-      return Option::None;
-    }
-
-    let entry = option.unwrap();
-    Option::Some(Ok(entry))
+  for x in b.into_iter() {
+      assert!(a.contains(&x), "\n{:?} does not contain '{}'\n", a, x);
   }
 }
